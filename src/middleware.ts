@@ -1,9 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { updateSession } from "@/lib/supabase/middleware";
 
 const SESSION_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 
-// Web Crypto HMAC-SHA256 — works in Edge Runtime (no Node crypto)
 async function verifyHmacEdge(
   payload: string,
   token: string,
@@ -23,7 +21,6 @@ async function verifyHmacEdge(
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
     if (expected.length !== token.length) return false;
-    // Constant-time comparison
     let diff = 0;
     for (let i = 0; i < expected.length; i++) {
       diff |= expected.charCodeAt(i) ^ token.charCodeAt(i);
@@ -42,24 +39,18 @@ export async function middleware(request: NextRequest) {
     if (pathname === "/admin/login") {
       return NextResponse.next();
     }
-
     const sessionCookie = request.cookies.get("admin_session");
     if (!sessionCookie) {
       return NextResponse.redirect(new URL("/admin/login", request.url));
     }
-
     try {
       const session = JSON.parse(sessionCookie.value) as {
         token: string;
         timestamp: number;
       };
-
-      // Check TTL
       if (Date.now() - session.timestamp > SESSION_TTL_MS) {
         return NextResponse.redirect(new URL("/admin/login", request.url));
       }
-
-      // Verify HMAC using Web Crypto
       const secret = process.env.HASH_SALT ?? "default_salt";
       const valid = await verifyHmacEdge(
         `admin:${session.timestamp}`,
@@ -74,7 +65,20 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  return await updateSession(request);
+  // Only run Supabase session refresh if env vars are configured
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (supabaseUrl && supabaseAnonKey) {
+    try {
+      const { updateSession } = await import("@/lib/supabase/middleware");
+      return await updateSession(request);
+    } catch {
+      // Fall through to NextResponse.next()
+    }
+  }
+
+  return NextResponse.next();
 }
 
 export const config = {
